@@ -1,0 +1,35 @@
+name: Keep reviews alive and back them up
+
+# Twice a day this job contacts your Supabase database (which stops the free plan
+# from pausing it) and saves a copy of the ratings and reviews into
+# data/reviews-backup.json in this repository.
+on:
+  schedule:
+    - cron: '17 5,17 * * *'
+  workflow_dispatch:        # lets you run it by hand from the Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Contact the database and save a backup copy
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: node scripts/backup-reviews.mjs
+      - name: Commit the backup if it changed
+        run: |
+          git config user.name "reviews-backup"
+          git config user.email "reviews-backup@users.noreply.github.com"
+          git add data/reviews-backup.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Update reviews backup"
+            git push
+          fi
