@@ -699,7 +699,10 @@
   .typing span{ width:6px; height:6px; border-radius:50%; background:var(--ink-muted); animation:bounce 1.2s infinite ease-in-out; }
   .typing span:nth-child(2){ animation-delay:0.15s; } .typing span:nth-child(3){ animation-delay:0.3s; }
   @keyframes bounce{ 0%,60%,100%{ transform:translateY(0); opacity:0.5; } 30%{ transform:translateY(-4px); opacity:1; } }
-  .chat-suggestions{ display:flex; flex-wrap:wrap; gap:8px; padding:4px 15px 12px; }
+  .chat-suggestions{ display:flex; flex-wrap:wrap; gap:8px; padding:2px 0 4px; }
+  .chat-suggestions[hidden]{ display:none; }
+  /* a short conversation sits at the bottom, next to the input; a long one scrolls normally */
+  .chat-messages > :first-child{ margin-top:auto; }
   .chip{ border:1px solid var(--line); background:var(--panel-alt); color:var(--ink-muted); border-radius:999px; padding:7px 12px; font-size:11.5px; cursor:pointer; transition:border-color 0.15s ease, color 0.15s ease; }
   .chip:hover, .chip:focus-visible{ border-color:var(--gold); color:var(--ink); }
   .chat-input-row{ display:flex; gap:8px; padding:11px 13px; border-top:1px solid var(--line); background:var(--panel-alt); }
@@ -831,7 +834,7 @@
 
           <div class="preview-note" id="previewNote" hidden>
             <i class="fas fa-flask"></i>
-            <span>Preview mode: ratings and reviews are saved only in this browser, and no emails are sent. Connect the live backend (see SETUP-REVIEWS.md) to collect shared reviews from real readers.</span>
+            <span id="noteText">Preview mode: ratings and reviews are saved only in this browser, and no emails are sent. Connect the live backend (see SETUP-REVIEWS.md) to collect shared reviews from real readers.</span>
           </div>
 
           <div class="reviews-layout">
@@ -943,7 +946,7 @@
       <span class="chat-head-status"><span class="dot"></span>Online</span>
     </div>
     <div class="chat-messages" id="chatMessages"></div>
-    <div class="chat-suggestions" id="chatSuggestions"></div>
+    <div class="chat-suggestions" id="chatSuggestions" hidden></div>
     <div class="chat-input-row">
       <input type="text" id="chatInput" placeholder="Ask a question…" aria-label="Ask a question">
       <button class="chat-send" id="chatSend" aria-label="Send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7Z"/></svg></button>
@@ -1131,8 +1134,8 @@
     // (public) key here. The anon key is designed to be public; the database
     // rules in the SQL file are what protect your data. See SETUP-REVIEWS.md.
     backend: {
-      supabaseUrl: "https://vtkrsawflywgnnktuqnu.supabase.co/auth/v1/callback",
-      supabaseAnonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ0a3JzYXdmbHl3Z25ua3R1cW51Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIwNDk1MTUsImV4cCI6MjEwNzYyNTUxNX0.wbzmoS52auxKi1tUpzGfj_r9Z6k1kVxeNLOONojiHjM"
+      supabaseUrl: "",
+      supabaseAnonKey: ""
     }
   };
   /* ============================================================ */
@@ -1416,7 +1419,7 @@
   // RATINGS & REVIEWS
   // ------------------------------------------------------------
   // Two interchangeable backends share one interface:
-  //   live     Supabase (auth, email verification, LinkedIn, database,
+  //   live     Supabase (auth, email verification, database,
   //            photo storage). Used when BOOK.backend has a URL and key.
   //   preview  everything stored in this browser only, so you can try the
   //            full flow before connecting a backend. Nothing is shared
@@ -1485,7 +1488,6 @@
         }
         return normUser(data.user);
       },
-      async signInLinkedIn(){ const { error } = await sb.auth.signInWithOAuth({ provider: 'linkedin_oidc', options: { redirectTo: redirectUrl() } }); if (error) throw error; },
       async signOut(){ await sb.auth.signOut(); },
       async resend(email){ const { error } = await sb.auth.resend({ type: 'signup', email, options: { emailRedirectTo: redirectUrl() } }); if (error) throw error; },
       async resetPassword(email){ const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: redirectUrl() }); if (error) throw error; },
@@ -1559,7 +1561,6 @@
         if (!u.verified) throw fail('Please confirm your email first.', 'unverified');
         s.session = u.id; write(s); emit('SIGNED_IN', pub(u)); return pub(u);
       },
-      async signInLinkedIn(){ throw fail('LinkedIn sign-in becomes available once the live backend is connected. See SETUP-REVIEWS.md.'); },
       async signOut(){ const s = read(); delete s.session; write(s); emit('SIGNED_OUT', null); },
       async resend(email){ const s = read(); s.codes[email] = String(Math.floor(100000 + Math.random() * 900000)); write(s); },
       async resetPassword(){ throw fail('Password reset works once the live backend is connected.'); },
@@ -1592,7 +1593,7 @@
   // ---------- state ----------
   let backend = null;
   let ratingState = { avg: 0, count: 0, dist: [0,0,0,0,0] };
-  const rv = { user: null, profile: null, mine: null, offset: 0, shown: 0, step: 'auth', tab: 'signin', email: '', blob: null, preview: null, busy: false, pending: 0, alreadyRated: false };
+  const rv = { readOnly: false, backup: null, user: null, profile: null, mine: null, offset: 0, shown: 0, step: 'auth', tab: 'signin', email: '', blob: null, preview: null, busy: false, pending: 0, alreadyRated: false };
   const PAGE_SIZE = 6;
   let reviewsReadyResolve; const reviewsReady = new Promise(r => { reviewsReadyResolve = r; });
 
@@ -1641,6 +1642,7 @@
   }
 
   async function submitRating(){
+    if (rv.readOnly){ toast('Ratings are read-only right now. Please try again later.'); return; }
     if (!rv.pending || rv.busy) return;
     rv.busy = true; $('rateSubmit').disabled = true;
     try{
@@ -1677,16 +1679,37 @@
       '<span class="badge-verified" title="This reviewer confirmed their email address"><i class="fas fa-circle-check"></i> Verified</span></div>' +
       '<p class="review-body">' + esc(r.body) + '</p><div class="review-date">' + esc(date) + '</div></article>';
   }
+  // If the live service cannot be reached, show the last saved copy of the
+  // ratings and reviews (data/reviews-backup.json, written by the scheduled
+  // GitHub job). It is read-only until the connection returns.
+  async function useBackup(){
+    try{
+      const res = await fetch('data/reviews-backup.json', { cache: 'no-store' });
+      if (!res.ok) return false;
+      const b = await res.json();
+      if (!b || !b.rating || !Array.isArray(b.reviews)) return false;
+      rv.backup = b; rv.readOnly = true;
+      ratingState = { avg: Number(b.rating.avg) || 0, count: b.rating.count || 0, dist: (b.rating.dist || [0,0,0,0,0]).map(n => n || 0) };
+      renderRating();
+      $('noteText').textContent = 'The live reviews service cannot be reached right now, so you are seeing the latest saved copy. Rating and reviewing will work again as soon as it reconnects.';
+      $('previewNote').hidden = false;
+      return true;
+    }catch(e){ return false; }
+  }
+
   async function loadReviews(reset){
     if (reset){ rv.offset = 0; $('reviewList').innerHTML = ''; }
     try{
-      const rows = await backend.listReviews(rv.offset, PAGE_SIZE);
+      const rows = (rv.readOnly && rv.backup)
+        ? rv.backup.reviews.slice(rv.offset, rv.offset + PAGE_SIZE).map(r => ({ user_id: null, body: r.body, created_at: r.created_at, profile: r.profile || {} }))
+        : await backend.listReviews(rv.offset, PAGE_SIZE);
       const list = $('reviewList'); list.insertAdjacentHTML('beforeend', rows.map(reviewCard).join(''));
       hydrateAvatars(list);
       rv.offset += rows.length; rv.shown = rv.offset;
       $('loadMoreReviews').hidden = rows.length < PAGE_SIZE;
       $('reviewsEmpty').hidden = rv.offset > 0;
     }catch(e){
+      if (!rv.readOnly && backend.mode === 'live' && await useBackup()) return loadReviews(true);
       $('reviewsEmpty').hidden = false; $('reviewsEmpty').textContent = 'Reviews could not be loaded right now. Please try again later.';
     }
   }
@@ -1709,6 +1732,8 @@
     const m = (e && e.message) || 'Something went wrong. Please try again.';
     if (/invalid login/i.test(m)) return 'Incorrect email or password.';
     if (/rate limit|too many/i.test(m)) return 'Too many attempts. Please wait a minute and try again.';
+    if (/failed to fetch|networkerror|load failed/i.test(m)) return 'The server could not be reached.';
+    if (/jwt|api key|apikey|invalid api/i.test(m)) return 'The anon key was not accepted.';
     if (/already registered/i.test(m)) return 'An account with this email already exists. Please sign in instead.';
     if (/row-level security|violates/i.test(m)) return 'This action is not allowed yet. Make sure your email is verified.';
     return m;
@@ -1730,6 +1755,7 @@
     else if (rv.step !== 'profile') rv.step = 'write';
   }
   function openReviewDialog(keepStep){
+    if (rv.readOnly){ toast('Reviews are read-only right now. Please try again later.'); return; }
     if (keepStep !== true) decideStep();
     renderStep();
     $('reviewModal').classList.add('open'); document.body.style.overflow = 'hidden';
@@ -1744,16 +1770,14 @@
     else rvBody.innerHTML = stepWrite();
     hydrateAvatars(rvBody);
     bindStep();
-    const first = rvBody.querySelector('input:not([type=hidden]):not([type=file]), textarea, button.btn-linkedin');
+    const first = rvBody.querySelector('input:not([type=hidden]):not([type=file]), textarea');
     if (first && window.innerWidth > 600) first.focus();
   }
 
   function stepAuth(){
     const signup = rv.tab === 'signup';
     return stepBar(1) + '<h4 id="rvTitle">Share your review</h4>' +
-      '<p class="auth-sub">Sign in to review this book. Your name, photo and headline appear next to your review.</p>' +
-      '<button class="btn-linkedin" type="button" data-act="linkedin"><i class="fab fa-linkedin-in"></i> Continue with LinkedIn</button>' +
-      '<div class="auth-divider"><span>or use your email</span></div>' +
+      '<p class="auth-sub">Create a free reader account, or sign in, to review this book. Your name, photo and headline appear next to your review.</p>' +
       '<div class="auth-tabs" role="tablist"><button type="button" data-tab="signin" class="' + (signup ? '' : 'active') + '">Sign in</button><button type="button" data-tab="signup" class="' + (signup ? 'active' : '') + '">Create account</button></div>' +
       '<form id="authForm" novalidate>' +
       '<label class="field-label">Email<input type="email" name="email" autocomplete="email" value="' + esc(rv.email) + '" required></label>' +
@@ -1844,7 +1868,6 @@
   }
 
   const actions = {
-    async linkedin(){ try{ sessionStorage.setItem('bsdc_after_auth', '1'); await backend.signInLinkedIn(); }catch(e){ setError(friendly(e)); } },
     async forgot(){
       const email = (rvBody.querySelector('input[name=email]') || {}).value;
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email || '')) return setError('Enter your email above first, then choose "Forgot your password?".');
@@ -1925,20 +1948,37 @@
   async function initReviews(){
     fillStars($('starsDisplay')); fillStars($('sumStars'));
     const cfg = BOOK.backend || {};
-    if (cfg.supabaseUrl && cfg.supabaseAnonKey){
+    const url = (cfg.supabaseUrl || '').trim(), key = (cfg.supabaseAnonKey || '').trim();
+    const looksFilled = !!(url || key);
+    const urlOk = /^https:\/\/[a-z0-9]{15,25}\.supabase\.co\/?$/i.test(url) && !/YOUR-PROJECT/i.test(url);
+    const keyOk = key.length > 60 && !/\.\.\./.test(key);
+    let configProblem = '';
+    if (looksFilled && !(urlOk && keyOk)){
+      configProblem = 'The backend settings in index.html are incomplete or still contain example text, so ratings and reviews are being saved only in this browser. '
+        + (!urlOk ? 'The Project URL should look like https://abcdefghijklmnopqrst.supabase.co. ' : '')
+        + (!keyOk ? 'The anon key should be the full long key (it starts with eyJ and has no "..." in it).' : '');
+    }
+    if (urlOk && keyOk){
       try{
         await loadScript('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js');
-        backend = makeSupabaseBackend(window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey));
-      }catch(e){ console.warn('Live backend unavailable, using preview mode.', e); }
+        backend = makeSupabaseBackend(window.supabase.createClient(url, key));
+      }catch(e){ configProblem = 'The reviews library could not be loaded (check the internet connection or an ad blocker), so this browser is using preview mode.'; console.warn('Live backend unavailable, using preview mode.', e); }
     }
     if (!backend) backend = makeLocalBackend();
     $('previewNote').hidden = backend.mode === 'live';
+    if (configProblem){ $('noteText').textContent = configProblem; }
     renderRateControls(); renderRating(); renderAccountBox();
     try{
       rv.user = await backend.init();
       if (rv.user){ rv.profile = await backend.getProfile(rv.user.id); rv.mine = await backend.getMyReview(rv.user.id); }
       ratingState = await backend.ratingSummary(); renderRating(); renderAccountBox();
-    }catch(e){ console.warn('Could not load ratings', e); }
+    }catch(e){
+      console.warn('Could not load ratings', e);
+      if (backend.mode === 'live' && !(await useBackup())){
+        $('noteText').textContent = 'Could not reach the reviews backend: ' + friendly(e) + ' Check that the Project URL and anon key are correct, that reviews-setup.sql was run, and that the Supabase project is not paused.';
+        $('previewNote').hidden = false;
+      }
+    }
     await loadReviews(true);
     backend.onAuth((evt, user) => {
       rv.user = user;
@@ -1970,7 +2010,7 @@
     chatPanel.classList.toggle('open', open);
     chatLauncher.classList.toggle('open', open);
     chatLauncher.setAttribute('aria-expanded', String(open));
-    if (open) chatInput.focus();
+    if (open){ chatInput.focus(); chatMessages.scrollTop = chatMessages.scrollHeight; }
   }
   chatLauncher.addEventListener('click', () => toggleChat());
 
@@ -2410,7 +2450,7 @@ You can rate the book with the five stars beside "What's inside". You do not nee
 
 ## How to write a review
 action: review
-Scroll to Reader reviews and choose Write a review. Sign in with LinkedIn or create an account with your email, confirm your email address, create a quick profile with your name, headline and optional photo, then write your review. You can edit or delete it later.
+Scroll to Reader reviews and choose Write a review. Create a reader account with your email (or sign in), confirm your email address, set up a quick profile with your name, headline and optional photo, then write your review. You can edit or delete it later.
 
 ## Reviewer accounts, privacy and email
 action: review
@@ -2835,7 +2875,7 @@ legal, engineering, cybersecurity or financial advice.
         /^(review|rate) (this|the) book$/.test(text)){
       const direct = /^(write|leave|add|post|submit|give|share|open|start|i want to|i would like to|i'd like to|review|rate)\b/.test(text);
       return {
-        text: 'You can rate the book with the stars beside "What\'s inside", and leave a written review in the Reader reviews section. To review, sign in with LinkedIn or email, create a quick profile with your photo, and confirm your email.' + (direct ? ' Opening the review form now.' : ''),
+        text: 'You can rate the book with the stars beside "What\'s inside", and leave a written review in the Reader reviews section. To review, create an account with your email, confirm it, and set up a quick profile with your photo.' + (direct ? ' Opening the review form now.' : ''),
         actions: ['review', 'rate'], run: direct ? { review: true } : null
       };
     }
@@ -2935,6 +2975,11 @@ legal, engineering, cybersecurity or financial advice.
 
   knowledgeReady.then(() => {
     addBotMessage(fillTemplate(openingReplies.length ? pick(openingReplies) : "Hi! I'm the Archive Assistant for {title}. How can I help?"));
+    // The starter questions live inside the conversation, under the greeting, so
+    // they scroll up and out of the way as soon as the chat gets going.
+    chatSuggestions.hidden = false;
+    chatMessages.appendChild(chatSuggestions);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
   });
 </script>
 </body>
